@@ -2,14 +2,17 @@ import type { Meal, MealPreview, SlotKey } from './types';
 
 /**
  * A tiny typed event bus. The app is event-driven: when something happens
- * (a meal is added, removed, a favorite is toggled) the store EMITS an event,
- * and any interested part of the UI (like the Toast) LISTENS and reacts.
+ * (a meal is added, a user signs in, ...) the code EMITS an event, and any
+ * interested part of the UI (like the Toast) LISTENS and reacts.
  * The emitter does not know who is listening.
  */
 export interface AppEvents {
   'meal:added': { meal: Meal; date: string; slot: SlotKey; replaced: boolean };
-  'meal:removed': { meal: Meal; date: string; slot: SlotKey };
+  'meal:removed': { meal: Meal; date: string; slot: SlotKey; undo: () => void };
+  'meal:cooked': { meal: Meal; cooked: boolean };
   'favorite:toggled': { meal: MealPreview; saved: boolean };
+  'auth:signedIn': { name: string };
+  'auth:signedOut': Record<string, never>;
   toast: { message: string; tone?: 'success' | 'info' | 'danger' };
 }
 

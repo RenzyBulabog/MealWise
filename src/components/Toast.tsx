@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { bus } from '../events';
-import { usePlanner } from '../store/PlannerContext';
 import { colors, floating, radius, slotMeta } from '../theme';
 import { formatDay } from '../utils/dates';
 
@@ -14,10 +13,9 @@ interface ToastItem {
 
 /**
  * Listens to events on the bus and shows a short message.
- * It never gets called directly: it only reacts to events.
+ * Nothing calls it directly: it only reacts to events.
  */
 export default function Toast() {
-  const { setMeal } = usePlanner();
   const insets = useSafeAreaInsets();
   const [item, setItem] = useState<ToastItem | null>(null);
   const anim = useRef(new Animated.Value(0)).current;
@@ -47,26 +45,24 @@ export default function Toast() {
           message: `${replaced ? 'Replaced with' : 'Added'} ${meal.name} · ${formatDay(date)} ${slotMeta[slot].label.toLowerCase()}`,
         })
       ),
-      bus.on('meal:removed', ({ meal, date, slot }) =>
-        show({
-          tone: 'info',
-          message: `Removed ${meal.name}`,
-          action: {
-            label: 'Undo',
-            run: () => setMeal(date, slot, meal, { silent: true }),
-          },
-        })
+      bus.on('meal:removed', ({ meal, undo }) =>
+        show({ tone: 'info', message: `Removed ${meal.name}`, action: { label: 'Undo', run: undo } })
+      ),
+      bus.on('meal:cooked', ({ meal, cooked }) =>
+        show({ tone: 'success', message: cooked ? `Marked ${meal.name} as cooked` : `${meal.name} is back on the to-cook list` })
       ),
       bus.on('favorite:toggled', ({ meal, saved }) =>
         show({ tone: 'info', message: saved ? `Saved ${meal.name}` : `Removed ${meal.name} from saved` })
       ),
+      bus.on('auth:signedIn', ({ name }) => show({ tone: 'success', message: `Welcome, ${name.split(' ')[0]}` })),
+      bus.on('auth:signedOut', () => show({ tone: 'info', message: 'You are signed out' })),
       bus.on('toast', ({ message, tone }) => show({ message, tone: tone ?? 'info' })),
     ];
     return () => {
       offs.forEach((off) => off());
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [show, setMeal]);
+  }, [show]);
 
   if (!item) return null;
 
@@ -77,10 +73,7 @@ export default function Toast() {
       style={[
         styles.wrap,
         { bottom: Math.max(insets.bottom, 12) + 78 },
-        {
-          opacity: anim,
-          transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }],
-        },
+        { opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] },
       ]}
     >
       <Pressable onPress={hide} style={[styles.toast, floating, { backgroundColor: bg }]} accessibilityRole="alert">
@@ -105,15 +98,7 @@ export default function Toast() {
 
 const styles = StyleSheet.create({
   wrap: { position: 'absolute', left: 16, right: 16, alignItems: 'center' },
-  toast: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderRadius: radius.md,
-    width: '100%',
-  },
+  toast: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingHorizontal: 18, paddingVertical: 14, borderRadius: radius.md, width: '100%' },
   msg: { flex: 1, color: colors.white, fontSize: 14, fontWeight: '600' },
   action: { color: colors.calamansi, fontWeight: '800', fontSize: 14 },
 });

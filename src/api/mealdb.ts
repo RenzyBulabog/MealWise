@@ -44,6 +44,7 @@ const toMeal = (r: Raw): Meal => {
     instructions: (r.strInstructions ?? '').trim(),
     ingredients,
     youtube: r.strYoutube || undefined,
+    source: 'api',
   };
 };
 
@@ -67,7 +68,7 @@ export async function filterByCategory(category: string): Promise<MealPreview[]>
 
 export async function listCategories(): Promise<string[]> {
   const data = await getJson<{ categories: { strCategory: string }[] }>('categories.php');
-  return data.categories.map((c) => c.strCategory);
+  return Array.from(new Set(data.categories.map((c) => c.strCategory)));
 }
 
 export async function lookupMeal(id: string): Promise<Meal> {
@@ -84,4 +85,22 @@ export async function randomMeal(): Promise<Meal> {
   const raw = data.meals?.[0];
   if (!raw) throw new Error('Could not pick a random meal. Try again.');
   return remember(toMeal(raw));
+}
+
+export async function listAreas(): Promise<string[]> {
+  const data = await getJson<{ meals: { strArea: string }[] | null }>('list.php?a=list');
+  return Array.from(new Set((data.meals ?? []).map((m) => m.strArea).filter((a) => a && a !== 'Unknown')));
+}
+
+/** Meals from one cuisine, e.g. "Filipino" (previews only). */
+export async function filterByArea(area: string): Promise<MealPreview[]> {
+  const data = await getJson<{ meals: Raw[] | null }>(`filter.php?a=${encodeURIComponent(area)}`);
+  return (data.meals ?? []).map(toPreview);
+}
+
+/** Meals that use one main ingredient (previews only). */
+export async function filterByIngredient(ingredient: string): Promise<MealPreview[]> {
+  const name = ingredient.trim().toLowerCase().replace(/\s+/g, '_');
+  const data = await getJson<{ meals: Raw[] | null }>(`filter.php?i=${encodeURIComponent(name)}`);
+  return (data.meals ?? []).map(toPreview);
 }

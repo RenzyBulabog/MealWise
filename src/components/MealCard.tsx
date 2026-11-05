@@ -22,7 +22,7 @@ export default function MealCard({ meal, width, favorite, onPress, onToggleFavor
       style={({ pressed }) => [styles.card, { width }, pressed && { opacity: 0.85 }]}
     >
       <View>
-        <MealImage uri={meal.thumb} size="medium" style={{ width, height: width * 0.85 }} />
+        <MealImage uri={meal.thumb} name={meal.name} size="medium" style={{ width, height: width * 0.85 }} />
         <Pressable
           onPress={onToggleFavorite}
           hitSlop={8}

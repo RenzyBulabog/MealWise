@@ -1,14 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Linking,
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Chip from '../components/Chip';
@@ -16,7 +7,8 @@ import MealImage from '../components/MealImage';
 import { lookupMeal } from '../api/mealdb';
 import { usePlanner } from '../store/PlannerContext';
 import { colors, radius, slotMeta, type } from '../theme';
-import { SLOT_ORDER, type Meal, type MealPreview, type SlotKey, type Target } from '../types';
+import { SLOT_ORDER, isFullMeal, type Meal, type MealPreview, type SlotKey, type Target } from '../types';
+import { conflicts } from '../utils/diet';
 import { addDays, dayShort, formatDay, toISO } from '../utils/dates';
 
 interface Props {
@@ -35,23 +27,30 @@ const suggestSlot = (category: string): SlotKey => {
 };
 
 export default function MealDetailModal({ preview, target, onClose, onAdded }: Props) {
-  const { plan, setMeal, isFavorite, toggleFavorite } = usePlanner();
+  const { plan, profile, notes, setMeal, setNote, isFavorite, toggleFavorite } = usePlanner();
   const insets = useSafeAreaInsets();
 
   const [meal, setMealState] = useState<Meal | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [noteDraft, setNoteDraft] = useState('');
 
   const [pickDate, setPickDate] = useState(toISO(new Date()));
   const [pickSlot, setPickSlot] = useState<SlotKey>('dinner');
 
-  // Load the full recipe whenever a different meal is opened.
+  // Show the meal: use it directly if we already have the full recipe, otherwise load it.
   useEffect(() => {
     if (!preview) return;
     let alive = true;
-    setMealState(null);
     setError(null);
+    if (isFullMeal(preview)) {
+      setMealState(preview);
+      setLoading(false);
+      setPickSlot(suggestSlot(preview.category));
+      return;
+    }
+    setMealState(null);
     setLoading(true);
     lookupMeal(preview.id)
       .then((m) => {
@@ -66,10 +65,16 @@ export default function MealDetailModal({ preview, target, onClose, onAdded }: P
     };
   }, [preview?.id, attempt]);
 
+  useEffect(() => {
+    setNoteDraft(preview ? notes[preview.id]?.note ?? '' : '');
+  }, [preview?.id]);
+
   const days = Array.from({ length: 14 }, (_, i) => addDays(new Date(), i));
   const date = target ? target.date : pickDate;
   const slot = target ? target.slot : pickSlot;
   const replacing = !!plan[date]?.[slot];
+  const clashes = meal ? conflicts(meal, profile) : [];
+  const rating = preview ? notes[preview.id]?.rating ?? 0 : 0;
 
   const add = () => {
     if (!meal) return;
@@ -106,8 +111,14 @@ export default function MealDetailModal({ preview, target, onClose, onAdded }: P
 
         {meal && (
           <>
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 140 }}>
-              <MealImage uri={meal.thumb} size="large" style={styles.hero} />
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
+              {meal.thumb ? (
+                <MealImage uri={meal.thumb} name={meal.name} size="large" style={styles.hero} />
+              ) : (
+                <View style={[styles.hero, styles.heroEmpty]}>
+                  <Text style={styles.heroLetter}>{meal.name.charAt(0).toUpperCase()}</Text>
+                </View>
+              )}
 
               <View style={styles.body}>
                 <Text style={type.title}>{meal.name}</Text>
@@ -120,7 +131,31 @@ export default function MealDetailModal({ preview, target, onClose, onAdded }: P
                       <Text style={styles.tagText}>{meal.area}</Text>
                     </View>
                   )}
+                  {meal.source === 'custom' && (
+                    <View style={[styles.tag, { backgroundColor: colors.ubeSoft }]}>
+                      <Text style={styles.tagText}>My recipe</Text>
+                    </View>
+                  )}
+                  {meal.source === 'featured' && (
+                    <View style={[styles.tag, { backgroundColor: colors.ubeSoft }]}>
+                      <Text style={styles.tagText}>MealWise pick</Text>
+                    </View>
+                  )}
+                  {!!meal.calories && (
+                    <View style={[styles.tag, { backgroundColor: colors.siliSoft }]}>
+                      <Text style={styles.tagText}>{meal.calories} kcal</Text>
+                    </View>
+                  )}
                 </View>
+
+                {clashes.length > 0 && (
+                  <View style={styles.warn}>
+                    <Ionicons name="warning-outline" size={20} color={colors.sili} />
+                    <Text style={styles.warnText}>
+                      Heads up: this contains {clashes.join(', ')}, which does not match your eating preferences.
+                    </Text>
+                  </View>
+                )}
 
                 {!target && (
                   <View style={styles.picker}>
@@ -128,14 +163,7 @@ export default function MealDetailModal({ preview, target, onClose, onAdded }: P
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
                       {days.map((d) => {
                         const iso = toISO(d);
-                        return (
-                          <Chip
-                            key={iso}
-                            label={`${dayShort(d)} ${d.getDate()}`}
-                            active={iso === pickDate}
-                            onPress={() => setPickDate(iso)}
-                          />
-                        );
+                        return <Chip key={iso} label={`${dayShort(d)} ${d.getDate()}`} active={iso === pickDate} onPress={() => setPickDate(iso)} />;
                       })}
                     </ScrollView>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
@@ -170,24 +198,39 @@ export default function MealDetailModal({ preview, target, onClose, onAdded }: P
                 ))}
 
                 {!!meal.youtube && (
-                  <Pressable
-                    onPress={() => Linking.openURL(meal.youtube!)}
-                    style={styles.video}
-                    accessibilityRole="link"
-                  >
+                  <Pressable onPress={() => Linking.openURL(meal.youtube!)} style={styles.video} accessibilityRole="link">
                     <Ionicons name="logo-youtube" size={20} color={colors.sili} />
                     <Text style={styles.videoText}>Watch a video of this recipe</Text>
                   </Pressable>
                 )}
+
+                <Text style={[type.h2, styles.section]}>Your rating and notes</Text>
+                <View style={styles.stars}>
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <Pressable
+                      key={n}
+                      onPress={() => setNote(meal.id, { rating: n === rating ? 0 : n, note: noteDraft })}
+                      hitSlop={6}
+                      accessibilityLabel={`${n} star${n > 1 ? 's' : ''}`}
+                    >
+                      <Ionicons name={n <= rating ? 'star' : 'star-outline'} size={30} color={n <= rating ? colors.calamansi : colors.line} />
+                    </Pressable>
+                  ))}
+                </View>
+                <TextInput
+                  value={noteDraft}
+                  onChangeText={setNoteDraft}
+                  onBlur={() => setNote(meal.id, { rating, note: noteDraft })}
+                  placeholder="Less salt next time, add more garlic..."
+                  placeholderTextColor={colors.muted}
+                  multiline
+                  style={styles.note}
+                />
               </View>
             </ScrollView>
 
             <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, 14) }]}>
-              <Pressable
-                onPress={add}
-                accessibilityRole="button"
-                style={({ pressed }) => [styles.cta, pressed && { opacity: 0.85 }]}
-              >
+              <Pressable onPress={add} accessibilityRole="button" style={({ pressed }) => [styles.cta, pressed && { opacity: 0.85 }]}>
                 <Ionicons name="add-circle-outline" size={20} color={colors.white} />
                 <Text style={styles.ctaText} numberOfLines={1}>
                   {replacing ? 'Replace' : 'Add to'} {formatDay(date)} · {slotMeta[slot].label}
@@ -197,14 +240,13 @@ export default function MealDetailModal({ preview, target, onClose, onAdded }: P
           </>
         )}
 
-        {/* Floating controls stay available while loading or on error. */}
         <View style={[styles.floatRow, { top: Math.max(insets.top, 16) }]} pointerEvents="box-none">
           <Pressable onPress={onClose} style={styles.fab} accessibilityLabel="Close" hitSlop={6}>
             <Ionicons name="chevron-down" size={22} color={colors.ink} />
           </Pressable>
           {preview && (
             <Pressable
-              onPress={() => toggleFavorite(preview)}
+              onPress={() => toggleFavorite(meal ?? preview)}
               style={styles.fab}
               accessibilityLabel={favorite ? 'Remove from saved' : 'Save meal'}
               hitSlop={6}
@@ -224,19 +266,15 @@ const styles = StyleSheet.create({
   retry: { marginTop: 16, backgroundColor: colors.pandan, paddingHorizontal: 22, paddingVertical: 13, borderRadius: radius.pill },
   retryText: { color: colors.white, fontWeight: '800', fontSize: 15 },
   hero: { width: '100%', height: 300 },
+  heroEmpty: { backgroundColor: colors.pandanSoft, alignItems: 'center', justifyContent: 'center' },
+  heroLetter: { fontSize: 96, fontWeight: '800', color: colors.pandan },
   body: { padding: 20, marginTop: -24, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, backgroundColor: colors.bg },
-  tags: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
   tag: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.pill },
   tagText: { fontSize: 13, fontWeight: '700', color: colors.pandanDeep },
-  picker: {
-    marginTop: 20,
-    padding: 14,
-    gap: 12,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.line,
-  },
+  warn: { flexDirection: 'row', gap: 10, marginTop: 16, padding: 12, borderRadius: radius.md, backgroundColor: colors.siliSoft },
+  warnText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.sili, lineHeight: 20 },
+  picker: { marginTop: 20, padding: 14, gap: 12, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   row: { gap: 8 },
   section: { marginTop: 26, marginBottom: 10 },
   card: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line },
@@ -246,40 +284,21 @@ const styles = StyleSheet.create({
   ingMeasure: { fontSize: 14, color: colors.muted, flexShrink: 1, textAlign: 'right' },
   video: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, paddingVertical: 8 },
   videoText: { fontSize: 15, fontWeight: '700', color: colors.sili },
-  bar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    backgroundColor: colors.bg,
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
+  stars: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  note: {
+    minHeight: 80,
+    padding: 12,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.line,
+    fontSize: 15,
+    color: colors.ink,
+    textAlignVertical: 'top',
   },
-  cta: {
-    height: 54,
-    borderRadius: radius.pill,
-    backgroundColor: colors.pandan,
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  bar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 20, paddingTop: 12, backgroundColor: colors.bg, borderTopWidth: 1, borderTopColor: colors.line },
+  cta: { height: 54, borderRadius: radius.pill, backgroundColor: colors.pandan, flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' },
   ctaText: { color: colors.white, fontWeight: '800', fontSize: 16 },
-  floatRow: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  fab: {
-    width: 42,
-    height: 42,
-    borderRadius: radius.pill,
-    backgroundColor: 'rgba(255,255,255,0.94)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  floatRow: { position: 'absolute', left: 16, right: 16, flexDirection: 'row', justifyContent: 'space-between' },
+  fab: { width: 42, height: 42, borderRadius: radius.pill, backgroundColor: 'rgba(255,255,255,0.94)', alignItems: 'center', justifyContent: 'center' },
 });

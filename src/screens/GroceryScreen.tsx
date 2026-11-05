@@ -1,8 +1,9 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import EmptyState from '../components/EmptyState';
 import WeekNav from '../components/WeekNav';
+import { Button, Segmented, TextField } from '../components/ui';
 import { bus } from '../events';
 import { usePlanner } from '../store/PlannerContext';
 import { colors, radius, type } from '../theme';
@@ -14,7 +15,10 @@ interface Item {
   name: string;
   measures: string[];
   meals: string[];
+  manualId?: string;
 }
+
+type Seg = 'list' | 'pantry';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -22,17 +26,29 @@ interface Props {
   selectedDate: string;
   onSelectDate: (iso: string) => void;
   onGoPlan: () => void;
+  onFindRecipes: (ingredient: string) => void;
 }
 
-export default function GroceryScreen({ selectedDate, onSelectDate, onGoPlan }: Props) {
-  const { plan, checked, toggleChecked, clearChecked } = usePlanner();
+export default function GroceryScreen({ selectedDate, onSelectDate, onGoPlan, onFindRecipes }: Props) {
+  const { plan, checked, pantry, manual, toggleChecked, clearChecked, addPantry, removePantry, addManual, removeManual } = usePlanner();
+  const [seg, setSeg] = useState<Seg>('list');
+  const [manualText, setManualText] = useState('');
+  const [pantryText, setPantryText] = useState('');
 
   const dates = useMemo(() => weekDates(selectedDate), [selectedDate]);
   const weekISO = toISO(dates[0]);
   const today = toISO(new Date());
   const isCurrentWeek = dates.some((d) => toISO(d) === today);
 
-  // Combine ingredients from every meal planned this week into one list.
+  const inPantry = (name: string) => {
+    const b = name.toLowerCase();
+    return pantry.some((p) => {
+      const a = p.name.trim().toLowerCase();
+      return a.length > 0 && (b.includes(a) || a.includes(b));
+    });
+  };
+
+  // Combine ingredients from every meal planned this week, plus items typed in by hand.
   const items = useMemo(() => {
     const map = new Map<string, Item>();
     dates.forEach((d) => {
@@ -53,12 +69,18 @@ export default function GroceryScreen({ selectedDate, onSelectDate, onGoPlan }: 
         });
       });
     });
-    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [plan, dates]);
+    const planned = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+    const extra: Item[] = manual
+      .filter((m) => m.week === weekISO)
+      .map((m) => ({ key: `manual:${m.id}`, name: capitalize(m.name), measures: [], meals: [], manualId: m.id }));
+    return [...planned, ...extra];
+  }, [plan, dates, manual, weekISO]);
 
   const keyFor = (item: Item) => `${weekISO}|${item.key}`;
-  const toBuy = items.filter((i) => !checked[keyFor(i)]);
-  const inBasket = items.filter((i) => checked[keyFor(i)]);
+  const have = items.filter((i) => !i.manualId && inPantry(i.name));
+  const needed = items.filter((i) => !have.includes(i));
+  const toBuy = needed.filter((i) => !checked[keyFor(i)]);
+  const inBasket = needed.filter((i) => checked[keyFor(i)]);
 
   const shiftWeek = (weeks: number) => onSelectDate(toISO(addDays(parseISO(selectedDate), weeks * 7)));
 
@@ -71,75 +93,154 @@ export default function GroceryScreen({ selectedDate, onSelectDate, onGoPlan }: 
     }
   };
 
+  const submitManual = () => {
+    addManual(manualText, weekISO);
+    setManualText('');
+  };
+
+  const submitPantry = () => {
+    if (addPantry(pantryText)) setPantryText('');
+  };
+
   const renderRow = (item: Item, done: boolean) => (
-    <Pressable
-      key={item.key}
-      onPress={() => toggleChecked(keyFor(item))}
-      accessibilityRole="checkbox"
-      accessibilityState={{ checked: done }}
-      style={({ pressed }) => [styles.row, pressed && { backgroundColor: colors.pandanSoft }]}
-    >
-      <Ionicons
-        name={done ? 'checkmark-circle' : 'ellipse-outline'}
-        size={26}
-        color={done ? colors.pandan : colors.line}
-      />
-      <View style={{ flex: 1 }}>
-        <Text style={[styles.name, done && styles.done]}>{item.name}</Text>
-        <Text style={[type.small, done && styles.done]} numberOfLines={1}>
-          {[item.measures.join(', '), `for ${item.meals.length} ${item.meals.length === 1 ? 'meal' : 'meals'}`]
-            .filter(Boolean)
-            .join(' · ')}
-        </Text>
-      </View>
-    </Pressable>
+    <View key={item.key} style={styles.row}>
+      <Pressable
+        onPress={() => toggleChecked(keyFor(item))}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: done }}
+        style={styles.rowMain}
+      >
+        <Ionicons name={done ? 'checkmark-circle' : 'ellipse-outline'} size={26} color={done ? colors.pandan : colors.line} />
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.name, done && styles.done]}>{item.name}</Text>
+          <Text style={[type.small, done && styles.done]} numberOfLines={1}>
+            {item.manualId
+              ? 'Added by you'
+              : [item.measures.join(', '), `for ${item.meals.length} ${item.meals.length === 1 ? 'meal' : 'meals'}`].filter(Boolean).join(' · ')}
+          </Text>
+        </View>
+      </Pressable>
+      {item.manualId && (
+        <Pressable onPress={() => removeManual(item.manualId!)} hitSlop={8} accessibilityLabel={`Remove ${item.name}`}>
+          <Ionicons name="close" size={20} color={colors.muted} />
+        </Pressable>
+      )}
+    </View>
   );
 
   return (
-    <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       <WeekNav dates={dates} isCurrentWeek={isCurrentWeek} onShift={shiftWeek} onToday={() => onSelectDate(today)} />
-      <Text style={[type.h3, { marginTop: 6 }]}>Groceries</Text>
-
-      {items.length === 0 ? (
-        <EmptyState
-          icon="basket-outline"
-          title="Your list is empty"
-          message="Plan a few meals for this week and the ingredients land here, combined and ready to tick off."
-          actionLabel="Plan meals"
-          onAction={onGoPlan}
+      <View style={{ marginTop: 14 }}>
+        <Segmented
+          options={[
+            { key: 'list' as Seg, label: 'Grocery list' },
+            { key: 'pantry' as Seg, label: `Pantry (${pantry.length})` },
+          ]}
+          value={seg}
+          onChange={setSeg}
         />
-      ) : (
+      </View>
+
+      {seg === 'list' && (
         <>
-          <View style={styles.actions}>
-            <Pressable onPress={shareList} style={styles.share} accessibilityRole="button">
-              <Ionicons name="share-outline" size={18} color={colors.white} />
-              <Text style={styles.shareText}>Share list</Text>
-            </Pressable>
-            {inBasket.length > 0 && (
-              <Pressable
-                onPress={() => clearChecked(`${weekISO}|`)}
-                style={styles.reset}
-                accessibilityRole="button"
-              >
-                <Text style={styles.resetText}>Untick all</Text>
-              </Pressable>
-            )}
+          <View style={styles.addRow}>
+            <View style={{ flex: 1 }}>
+              <TextField
+                value={manualText}
+                onChangeText={setManualText}
+                onSubmitEditing={submitManual}
+                placeholder="Add something else to buy"
+                autoCapitalize="sentences"
+                returnKeyType="done"
+              />
+            </View>
+            <Button label="Add" kind="soft" onPress={submitManual} style={{ height: 48 }} />
           </View>
 
-          {toBuy.length > 0 ? (
-            <>
-              <Text style={styles.section}>To buy ({toBuy.length})</Text>
-              <View style={styles.card}>{toBuy.map((i) => renderRow(i, false))}</View>
-            </>
+          {items.length === 0 ? (
+            <EmptyState
+              icon="basket-outline"
+              title="Your list is empty"
+              message="Plan a few meals for this week and the ingredients land here, combined and ready to tick off."
+              actionLabel="Plan meals"
+              onAction={onGoPlan}
+            />
           ) : (
-            <Text style={[type.h3, { marginTop: 24, textAlign: 'center' }]}>Everything is in the basket.</Text>
-          )}
-
-          {inBasket.length > 0 && (
             <>
-              <Text style={styles.section}>In the basket ({inBasket.length})</Text>
-              <View style={styles.card}>{inBasket.map((i) => renderRow(i, true))}</View>
+              <View style={styles.actions}>
+                <Button label="Share list" icon="share-outline" small onPress={shareList} disabled={toBuy.length === 0} />
+                {inBasket.length > 0 && <Button label="Untick all" kind="soft" small onPress={() => clearChecked(`${weekISO}|`)} />}
+              </View>
+
+              {toBuy.length > 0 ? (
+                <>
+                  <Text style={styles.section}>To buy ({toBuy.length})</Text>
+                  <View style={styles.card}>{toBuy.map((i) => renderRow(i, false))}</View>
+                </>
+              ) : (
+                <Text style={[type.h3, { marginTop: 24, textAlign: 'center' }]}>Nothing left to buy.</Text>
+              )}
+
+              {inBasket.length > 0 && (
+                <>
+                  <Text style={styles.section}>In the basket ({inBasket.length})</Text>
+                  <View style={styles.card}>{inBasket.map((i) => renderRow(i, true))}</View>
+                </>
+              )}
+
+              {have.length > 0 && (
+                <>
+                  <Text style={styles.section}>Already in your pantry ({have.length})</Text>
+                  <View style={styles.card}>
+                    {have.map((i) => (
+                      <View key={i.key} style={styles.row}>
+                        <Ionicons name="home-outline" size={22} color={colors.pandan} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.name}>{i.name}</Text>
+                          <Text style={type.small} numberOfLines={1}>
+                            {i.measures.join(', ')}
+                          </Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                </>
+              )}
             </>
+          )}
+        </>
+      )}
+
+      {seg === 'pantry' && (
+        <>
+          <Text style={[type.small, { marginTop: 16 }]}>
+            Add what you already have. Those ingredients move out of your grocery list, and you can find meals that use them.
+          </Text>
+          <View style={styles.addRow}>
+            <View style={{ flex: 1 }}>
+              <TextField value={pantryText} onChangeText={setPantryText} onSubmitEditing={submitPantry} placeholder="e.g. rice, garlic, soy sauce" autoCapitalize="sentences" returnKeyType="done" />
+            </View>
+            <Button label="Add" kind="soft" onPress={submitPantry} style={{ height: 48 }} />
+          </View>
+
+          {pantry.length === 0 ? (
+            <EmptyState icon="home-outline" title="Your pantry is empty" message="Add a few staples to skip buying them twice." />
+          ) : (
+            <View style={styles.card}>
+              {pantry.map((p) => (
+                <View key={p.id} style={styles.row}>
+                  <Text style={[styles.name, { flex: 1 }]}>{capitalize(p.name)}</Text>
+                  <Pressable onPress={() => onFindRecipes(p.name)} style={styles.find} accessibilityRole="button">
+                    <Ionicons name="search" size={14} color={colors.pandan} />
+                    <Text style={styles.findText}>Find meals</Text>
+                  </Pressable>
+                  <Pressable onPress={() => removePantry(p.id)} hitSlop={8} accessibilityLabel={`Remove ${p.name}`}>
+                    <Ionicons name="close" size={20} color={colors.muted} />
+                  </Pressable>
+                </View>
+              ))}
+            </View>
           )}
         </>
       )}
@@ -149,35 +250,14 @@ export default function GroceryScreen({ selectedDate, onSelectDate, onGoPlan }: 
 
 const styles = StyleSheet.create({
   content: { padding: 20, paddingBottom: 130 },
+  addRow: { flexDirection: 'row', gap: 8, marginTop: 16 },
   actions: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  share: {
-    flexDirection: 'row',
-    gap: 8,
-    height: 44,
-    paddingHorizontal: 18,
-    borderRadius: radius.pill,
-    backgroundColor: colors.pandan,
-    alignItems: 'center',
-  },
-  shareText: { color: colors.white, fontWeight: '800', fontSize: 14 },
-  reset: {
-    height: 44,
-    paddingHorizontal: 18,
-    borderRadius: radius.pill,
-    backgroundColor: colors.pandanSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  resetText: { color: colors.pandan, fontWeight: '800', fontSize: 14 },
   section: { ...type.h3, marginTop: 24, marginBottom: 10 },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.line,
-    overflow: 'hidden',
-  },
+  card: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, overflow: 'hidden', marginTop: 12 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 12 },
+  rowMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 },
   name: { fontSize: 16, fontWeight: '700', color: colors.ink },
   done: { textDecorationLine: 'line-through', color: colors.muted },
+  find: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 32, borderRadius: radius.pill, backgroundColor: colors.pandanSoft },
+  findText: { fontSize: 13, fontWeight: '800', color: colors.pandan },
 });
